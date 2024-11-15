@@ -1,10 +1,3 @@
-'''
-AUTHOR: uday.marwah
-TIME: 16-05-2024 10:01:27
-
-NEO DOC DIVE: PDF RAG CHATBOT APP FOR NEOSTATS INTERNAL USE
-'''
-
 ##Preliminary and dependencies
 from dotenv import load_dotenv
 import os
@@ -21,7 +14,7 @@ from operator import itemgetter
 from langchain.schema.runnable import RunnableMap
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
-import pymupdf
+
 load_dotenv()
 
 #Loading secrets
@@ -34,10 +27,10 @@ vector_store_password: str = st.secrets.AI_SEARCH_PASSWORD
 azure_deployment = st.secrets.EMBEDDING_DEPLOYMENT
 api_version = st.secrets.OPENAI_API_VERSION
 openai_deployment = st.secrets.OPENAI_DEPLOYMENT
-
 #Inititalizing Embeddings model
 embeddings = AzureOpenAIEmbeddings(azure_deployment=azure_deployment,
                                     openai_api_version=api_version)
+
 
 ##Function for formating loaded documents
 def format_docs(docs):
@@ -53,6 +46,8 @@ def file_loader(document):
     
     for page in pdf_reader.pages:
         text+=page.extract_text()
+
+    #Initilizing langchain CharacterTextSplitter
     text_splitter=CharacterTextSplitter(separator="\n",
                                         chunk_size=1000,
                                         chunk_overlap=200,
@@ -62,29 +57,24 @@ def file_loader(document):
     #Storing into vector store
     vector_store = FAISS.from_texts(chunks, embeddings)
     vector_store.save_local("temp-index")
-def chatbot_long(query: str):
+
+
+##Function for generating answer based on similarity search of the knowlege index
+def chatbot_short(query: str):
     
     #Getting a retriever of the vector store
-    folder = os.getcwd() + "/temp-index/"
+    folder = os.getcwd()+"/temp-index"
     knowledge_index = FAISS.load_local(folder_path=folder, index_name="index", embeddings=embeddings, allow_dangerous_deserialization=True)
     
     retriever = knowledge_index.as_retriever(search_type='similarity', search_kwargs={'k':3})
-    template_caseSummary="""
-    You are an AML Assistant, tasked with helping users based on the cases provided as context.
-        - If the user greets you, reply with a greeting and ask how you can assist.
-        - If the user requests an email, generate a professional one.
-        - If the user asks for a case summary, provide a properly formatted summary based on the case document.
-        - If the user asks for generate summary for transaction made for particular case Id, provide a properly formatted summary based on the case document.
-        - If the user's question is unrelated to the case, politely inform them that you can only respond to questions relevant to the case.
-        - If the user requests suggestions on what steps to take next regarding the case, assist them by providing relevant and contextual recommendations.
-    Make sure all responses are well-formatted, with appropriate line breaks.
-    Case Note: {context}
-    User’s Question: {question}
-    """
-    prompt = PromptTemplate(
-    template=template_caseSummary,
-    input_variables=["question", "context"]
-    )
+
+    #Building a RAG prompt
+    prompt = ChatPromptTemplate(input_variables=['context', 'question'], 
+                                metadata={'lc_hub_owner': 'rlm', 'lc_hub_repo': 'rag-prompt',
+                                        'lc_hub_commit_hash': '50442af133e61576e74536c6556cefe1fac147cad032f4377b60c436e6cdcb6e'},
+                                messages=[HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['context', 'question'], 
+                                                                                        template="You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. If you don't know the answer then answer normally while informing that you can answer from the read PDF, Use two-three sentences maximum, and keep the answer concise. Make sure arabic text should be align to right.\nQuestion: {question} \nContext: {context} \nAnswer:"))])
+
     #Azure OpenAI model - Using Indorama resource for now
     llm = AzureChatOpenAI(openai_api_version=api_version,
                         azure_deployment=openai_deployment,
@@ -102,55 +92,153 @@ def chatbot_long(query: str):
 
     return invoked_dict
 
-##Main method containing streamlit application UI 
-def main():
+def chatbot_long(query: str):
     
-    #setting up page configuration
-    st.set_page_config(page_title="AML Assitant", page_icon="NeoStats_Logo_N.png", layout='wide')
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    #Getting a retriever of the vector store
+    folder = os.getcwd()+"/temp-index"
+    knowledge_index = FAISS.load_local(folder_path=folder, index_name="index", embeddings=embeddings, allow_dangerous_deserialization=True)
+    
+    retriever = knowledge_index.as_retriever(search_type='similarity', search_kwargs={'k':3})
 
-    with st.chat_message("assistant", avatar='NeoStats_Logo_N.png'):
-        st.markdown("<div>Hi! How can I help you today?</div>",unsafe_allow_html=True)
+    #Building a RAG prompt
+    prompt = ChatPromptTemplate(input_variables=['context', 'question'], 
+                                metadata={'lc_hub_owner': 'rlm', 'lc_hub_repo': 'rag-prompt',
+                                        'lc_hub_commit_hash': '50442af133e61576e74536c6556cefe1fac147cad032f4377b60c436e6cdcb6e'},
+                                messages=[HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['context', 'question'], 
+                                                                                        template="You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. If you don't know the answer then answer normally while informing that you can answer from the read PDF. Use five-six sentences maximum. Make sure to align arabic text to right. \nQuestion: {question} \nContext: {context} \nAnswer:"))])
 
-    #Setting up chat elements for assistant and user
-    for message in st.session_state.messages:
-        if message['role'] == 'assistant':
-            with st.chat_message(message['role'], avatar='NeoStats_Logo_N.png'):
-                st.markdown(message['content'])
+    #Azure OpenAI model - Using Indorama resource for now
+    llm = AzureChatOpenAI(openai_api_version=api_version,
+                        azure_deployment=openai_deployment,
+                        temperature=0.2)
+
+    #Building and invoking the RAG chain 
+    rag_chain_from_docs = ({'context': lambda input: format_docs(input['documents']),
+                            'question': itemgetter('question')}
+                            | prompt | llm | StrOutputParser())
+
+    rag_chain_with_source = RunnableMap({'documents': retriever,
+                                        'question': RunnablePassthrough()}) | {'documents': lambda input: [doc.metadata for doc in input['documents']],
+                                                                                'answer': rag_chain_from_docs}
+    invoked_dict = rag_chain_with_source.invoke(query)
+
+    return invoked_dict
+
+def handle_message():
+    if st.session_state.input_text:
+        # Add the user message to the chat history
+        st.session_state.messages.append({"role": "user", "content": st.session_state.input_text})
+
+        # Process the response (replace with your chatbot's logic)
+        if st.session_state.answer_type == "Concise":
+            response_dict = chatbot_short(st.session_state.input_text)
         else:
-            with st.chat_message(message['role']):
-                st.markdown(message['content'])
+            response_dict = chatbot_long(st.session_state.input_text)
 
-    #Sidebar for providing document that is to be read - passing to file_loader() function
+        response = response_dict.get('answer', "Sorry, I couldn't understand your question.")
+
+        # Add the assistant's response to the chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+        # Clear the input field after sending the message
+        st.session_state.input_text = ""
+
+def main():
+    rtl_css = """
+    <style>
+        .rtl-message {
+            direction: rtl;
+            text-align: right;
+            margin-right: 0.5rem;
+        }
+        .rtl-text {
+            direction: rtl;
+            text-align: right;
+            margin-right: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .ltr-text {
+            direction: ltr;
+            text-align: left;
+            margin-right: 0.5rem;
+            margin-top: 0.1rem;
+        }
+        .stTextInput {
+            text-align: right;
+            position: fixed;
+            bottom: 1rem; /* Adjust as needed */
+            right: 10;
+            width: 64%;
+            direction: rtl;
+            padding-top:0;
+            padding-right: 40px; /* Adjust as needed for scroll bar */
+            z-index: 9999; /* Ensures it stays above other elements */
+        }
+    }
+    </style>
+    """
+    
+    st.set_page_config(page_title="LegalAdvisorAI", page_icon="NeoStats_Logo_N.png", layout='wide')
+    # Custom CSS for inline layout
+    inline_css = """
+    <style>
+    .inline-container {
+        display: flex;
+        align-items: center;
+        position: fixed;
+        margin-top: 0;
+        padding-top:0;
+    }
+
+    .inline-container h2 {
+        margin: 0;
+        margin-top: 0;
+        padding-top:0;
+    }
+  
+    </style>
+    """
+    st.markdown('<div class="content">', unsafe_allow_html=True)
+    with st.container(border=True,height=500):
+            st.markdown(rtl_css, unsafe_allow_html=True)
+            # Main content area with top padding
+            if "input_text" not in st.session_state:
+                st.session_state.input_text = ""
+
+            if "answer_type" not in st.session_state:
+                st.session_state.answer_type = "Concise"
+                    
+            if 'messages' not in st.session_state:
+                st.session_state.messages = []
+
+                    # Display chat history
+            for message in st.session_state.messages:
+                if message['role'] == 'assistant':
+                    with st.chat_message(message['role'], avatar='NeoStats_Logo_N.png'):
+                        content = message['content']
+                        if "(" in content and ")" in content:  # Check if both parentheses exist
+                            arabic_part, english_part = content.split("(", 1)
+                            english_part = english_part.rstrip(")")
+                            st.markdown(f"<div class='rtl-text'>{arabic_part}</div>", unsafe_allow_html=True)
+                            st.markdown(f"<div class='ltr-text'>({english_part})</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div class='rtl-text'>{content}</div>", unsafe_allow_html=True)
+                else:
+                    with st.chat_message(message['role']):
+                        st.markdown(f"<div class='rtl-text'>{message['content']}</div>", unsafe_allow_html=True)
+            
     with st.sidebar:
-        st.image('image.png', output_format="PNG", width=300)
-        st.title("AML Compliance Co-pilot\n")
-        st.subheader("Upload Document")
-        doc = st.file_uploader("Upload file here, and click on  the 'Load File' button", accept_multiple_files=False)
+        st.image("image.png", use_column_width=True) 
+        st.subheader("تحميل ملف PDF (Upload PDF File)")
+        doc = st.file_uploader("قم بتحميل الملف هنا، ثم انقر فوق الزر 'Load File' (Upload file here, and click on the 'Load File' button)", accept_multiple_files=False)
         if st.button("Load File"):
             with st.spinner("Loading file..."):
-                file_loader(doc)
+                if doc is not None:
+                    file_loader(doc)
 
-    #Taking user prompt - passing to chatbot() function
-    if prompt := st.chat_input("Enter your question"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.answer_type = st.radio("نوع الإجابة (Answer Type): ", ['مقتضب (Concise)', 'مفصل (Detailed)'], captions=['إجابات أقصر وأكثر تلخيصا (Shorter, more summarised answers)', 'إجابات أطول وأكثر تفصيلا (Longer, more detailed answers)'])
 
-        response_dict = chatbot_long(prompt)
-        response = response_dict['answer']
-        response = response.replace("Response: ", "")
-        response = response.replace("$", "Dollors")
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant", avatar='NeoStats_Logo_N.png'):
-
-            st.markdown(response)
-            print(response)
-
-            #Appending messages so user can see chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-
+    st.text_input("Enter your question", value=st.session_state.input_text, key="input_text", placeholder="سؤالك هنا...", on_change=handle_message, label_visibility="collapsed")
 
 if __name__ == "__main__":
     main()
