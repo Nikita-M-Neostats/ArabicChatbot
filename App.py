@@ -1,5 +1,5 @@
 ##Preliminary and dependencies
-from dotenv import load_dotenv
+
 import os
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
@@ -14,8 +14,6 @@ from operator import itemgetter
 from langchain.schema.runnable import RunnableMap
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
-
-load_dotenv()
 
 #Loading secrets
 os.environ["AZURE_OPENAI_ENDPOINT"] = st.secrets.OPENAI_ENDPOINT
