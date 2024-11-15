@@ -124,7 +124,7 @@ def main():
 
     #Sidebar for providing document that is to be read - passing to file_loader() function
     with st.sidebar:
-        st.image('Neostats_Logo.png', output_format="PNG", width=300)
+        st.image('image.png', output_format="PNG", width=300)
         st.title("AML Compliance Co-pilot\n")
         st.subheader("Upload Document")
         doc = st.file_uploader("Upload file here, and click on  the 'Load File' button", accept_multiple_files=False)
